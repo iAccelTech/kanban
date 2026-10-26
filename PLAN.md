@@ -67,7 +67,7 @@ with `-static ./web`, so no nginx is needed locally.
 | Sessions | Random 256-bit token in an `HttpOnly; SameSite=Lax` cookie; SHA-256 of it stored in `sessions` | A database leak doesn't leak live sessions |
 | Frontend | Vanilla ES modules, no build step | "Plain pages" |
 | Markdown | `goldmark` (raw HTML off) → `bluemonday` UGC sanitizer, rendered on the server | Users write Markdown; only sanitized HTML reaches the browser |
-| Email | `net/smtp` to a configured relay; in dev, links print to stdout | Signup verification only |
+| Email | Gmail SMTP (`smtp.gmail.com:587`, STARTTLS) with an app password, via `net/smtp`; in dev, links print to stdout | Signup verification only; Gmail's daily send cap is far above what signups need |
 | Drag and drop | SortableJS, one vendored file in `web/vendor/` | Handles touch, auto-scroll and nested lists; hard to get right by hand |
 | Live updates | Server-sent events (`EventSource`) | SCALING.md §8 |
 | Backups | Litestream | SCALING.md §10 |
@@ -358,7 +358,13 @@ nginx site, with every host-specific value in config:
 | Data directory | `KANBAN_DATA` | `./data` |
 | Public base URL (for email links) | `KANBAN_BASE_URL` | `http://127.0.0.1:6220` |
 | Allowed signup domains | `KANBAN_SIGNUP_DOMAINS` | *(empty = signup disabled)* |
-| SMTP relay | `KANBAN_SMTP_HOST`, `_PORT`, `_USER`, `_PASS`, `_FROM` | *(unset = links printed to stdout)* |
+| SMTP relay | `KANBAN_SMTP_HOST`, `_PORT`, `_USER`, `_PASS`, `_FROM` | *(unset = links printed to stdout)*. For Gmail: `smtp.gmail.com`, `587`, the full sending address, a 16-character app password, and the same address as `_FROM` |
+
+**Gmail setup:** turn on 2-Step Verification for the sending account, create an app
+password (Google Account → Security → App passwords), and put it in
+`KANBAN_SMTP_PASS` in the server's env file, never in the repo. Use a dedicated
+sender account (e.g. `kanban@yourdomain`) rather than a person's mailbox, so its
+password can be rotated or revoked on its own.
 
 Rules that hold wherever it runs:
 
@@ -381,3 +387,4 @@ If it later runs on `elevate`, follow CloudServer's app checklist and its Rule z
 | Hosting | Not decided; build it host-agnostic (§9) |
 | Card text | Markdown, rendered on the server and sanitized (§2, M5) |
 | Signup | Restricted to configured email domains, with verified email (M1) |
+| Email transport | Gmail SMTP with an app password (§9) |
