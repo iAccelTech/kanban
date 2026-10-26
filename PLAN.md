@@ -22,7 +22,7 @@ build order.
 
 ### Not in v1
 
-Attachments, search, notifications/email, templates, automation (Butler-style rules),
+Attachments, search, notifications (email is used only for account verification), templates, automation (Butler-style rules),
 power-ups, multiple workspaces in the UI (the schema keeps `workspace_id` anyway; see
 SCALING.md §7), mobile app, public boards.
 
@@ -66,6 +66,8 @@ with `-static ./web`, so no nginx is needed locally.
 | Passwords | `golang.org/x/crypto/argon2` (argon2id) | Current best practice |
 | Sessions | Random 256-bit token in an `HttpOnly; SameSite=Lax` cookie; SHA-256 of it stored in `sessions` | A database leak doesn't leak live sessions |
 | Frontend | Vanilla ES modules, no build step | "Plain pages" |
+| Markdown | `goldmark` (raw HTML off) → `bluemonday` UGC sanitizer, rendered on the server | Users write Markdown; only sanitized HTML reaches the browser |
+| Email | `net/smtp` to a configured relay; in dev, links print to stdout | Signup verification only |
 | Drag and drop | SortableJS, one vendored file in `web/vendor/` | Handles touch, auto-scroll and nested lists; hard to get right by hand |
 | Live updates | Server-sent events (`EventSource`) | SCALING.md §8 |
 | Backups | Litestream | SCALING.md §10 |
@@ -115,20 +117,21 @@ All tables are `STRICT`. Times are Unix milliseconds (`INTEGER`). Every row with
 user content has `archived_at INTEGER NULL`; Trello archives rather than deletes.
 
 ```sql
-users        (id, email UNIQUE, name, pw_hash, created)
+users        (id, email UNIQUE, name, pw_hash, verified_at INTEGER NULL, created)
+email_tokens (token_hash PK, user_id, purpose, expires)            -- verify, password reset
 sessions     (token_hash PK, user_id, created, expires, last_seen)
 workspaces   (id, name, created)                          -- one row in v1
 boards       (id, workspace_id, title, color, created_by, created, archived_at, version)
 board_members(board_id, user_id, role CHECK (role IN ('owner','editor','viewer')), PK(board_id,user_id))
 board_stars  (board_id, user_id, PK(board_id,user_id))
 lists        (id, board_id, title, rank TEXT, created, archived_at, version)
-cards        (id, board_id, list_id, title, description, rank TEXT, due INTEGER NULL,
+cards        (id, board_id, list_id, title, description /* Markdown source */, description_html, rank TEXT, due INTEGER NULL,
               due_done INTEGER, created_by, created, updated, archived_at, version)
 labels       (id, board_id, name, color)
 card_labels  (card_id, label_id, PK(card_id,label_id))
 checklists   (id, card_id, title, rank TEXT)
 check_items  (id, checklist_id, text, done INTEGER, rank TEXT)
-comments     (id, card_id, user_id, body, created, edited)
+comments     (id, card_id, user_id, body /* Markdown */, body_html, created, edited)
 events       (seq INTEGER PRIMARY KEY, board_id, user_id, type, payload TEXT /* JSON */, created)
 idempotency  (key PK, user_id, response TEXT, created)
 ```
@@ -146,6 +149,8 @@ Indexes: `lists(board_id, rank)`, `cards(list_id, rank)`, `cards(board_id)`,
 - `rank` is a fractional index (SCALING.md §7). **The server computes it.** Clients
   send `before_id` and `after_id`, never rank strings.
 - `events` is the activity feed and the SSE replay log at once.
+- Markdown is stored as source and rendered once, on write, into `*_html`. Reads
+  serve the stored HTML, so they never pay the cost of rendering.
 
 ---
 
@@ -159,8 +164,10 @@ header.
 
 | Method | Path | |
 |---|---|---|
-| POST | `/api/auth/signup` | `{email, name, password}` |
-| POST | `/api/auth/login` | Sets the session cookie |
+| POST | `/api/auth/signup` | `{email, name, password}`. Email domain must be in `KANBAN_SIGNUP_DOMAINS`; sends a verification link |
+| POST | `/api/auth/verify` | `{token}` → marks the email verified |
+| POST | `/api/auth/resend` | Re-send the verification link (rate-limited) |
+| POST | `/api/auth/login` | Sets the session cookie; refused until the email is verified |
 | POST | `/api/auth/logout` | |
 | GET | `/api/me` | Current user |
 
@@ -247,10 +254,16 @@ is green.
 
 ### M1: Auth
 - Signup, login and logout; argon2id; session cookie; auth middleware
-- A per-IP rate limit on login
-- Login page
+- Signup restricted to `KANBAN_SIGNUP_DOMAINS` (comma-separated, e.g.
+  `example.com,lab.example.com`); the match is exact on the part after `@`,
+  case-insensitive
+- Email verification: single-use token, 24 h expiry, link sent over SMTP. Without
+  it, anyone could type an address at the allowed domain and get in.
+- A per-IP rate limit on login, signup and resend
+- Login, signup and verify pages
 
-**Done when:** you can sign up, log in, and `/api/me` returns you.
+**Done when:** an allowed address can sign up, verify and log in, and `/api/me`
+returns them. Any other domain is refused, and so is an unverified login.
 
 ### M2: Boards, lists, cards (no drag yet)
 - `rank.go` with property tests: `between(a, b)` always sorts strictly between its
@@ -280,8 +293,10 @@ a reload. Two quick drags don't produce out-of-order results.
 100 ms, and a client that was offline catches up on reconnect.
 
 ### M5: Card details
-- Card modal: description (plain text with line breaks in v1), due date, labels,
-  checklists, comments
+- Card modal: Markdown description (edit/preview), due date, labels, checklists,
+  Markdown comments
+- Sanitizer tests: `<script>`, `javascript:` links, `onerror=` attributes and raw
+  HTML all come out inert
 
 **Done when:** the card modal reaches feature parity with Trello's basics.
 
@@ -292,7 +307,7 @@ a reload. Two quick drags don't produce out-of-order results.
 **Done when:** a viewer cannot change anything. This is enforced on the server and
 tested per endpoint.
 
-### M7: Deploy to `elevate`
+### M7: Deployable
 - `deploy/kanban.service`:
   - `User=kanban`, `127.0.0.1:6220`, `GOMEMLIMIT=128MiB`
   - Hardening: `ProtectSystem=strict`, `ReadWritePaths=/srv/data/kanban`,
@@ -300,15 +315,15 @@ tested per endpoint.
 - `deploy/nginx-kanban.conf`: a Tailscale-only listen, static root, `/api/` proxy,
   an SSE location with `proxy_buffering off`, `proxy_read_timeout 1h`
 - `deploy/litestream.yml` → `/mnt/data/backups/kanban`
-- `deploy.sh`:
+- `deploy.sh HOST`:
   1. `GOOS=linux go build`
   2. rsync the binary and `web/`
   3. `nginx -t && systemctl reload nginx`
   4. restart `kanban`
   5. curl `/healthz`
-- Register with the rootstock agent (CloudServer's checklist, step 7)
 
-**Done when:** a restore from Litestream has been tested. Section 9 covers Rule zero.
+**Done when:** a fresh Ubuntu host goes from nothing to running with the steps in
+the README, and a restore from Litestream has been tested.
 
 ### M8: Hardening and load test
 - `scripts/loadtest.js` (k6, open model, the 90/8/2 mix from SCALING.md §11)
@@ -332,32 +347,37 @@ tested per endpoint.
 
 ---
 
-## 9. Deployment notes for `elevate`
+## 9. Deployment
 
-- **Ports:** the app on `127.0.0.1:6220` and pprof on `127.0.0.1:6221`. nginx
-  listens on the Tailscale address. Pick an unused external port, or a `server_name`
-  such as `kanban.elevated.eco`, following the existing `*.elevated.eco` pattern.
-  Confirm against `intranet.conf` first.
-- **Paths:** binary at `/srv/apps/kanban/kanban`, static files at
-  `/srv/apps/kanban/web`, data at `/srv/data/kanban/`, backups at
-  `/mnt/data/backups/kanban/`.
-- **Rule zero:** this deploy only adds an nginx site, reloads nginx, and starts one
-  systemd unit. It touches no netplan, networkd, firewall or Tailscale settings, so
-  it can't interrupt the server's internet access. Keep it that way: `deploy.sh` must
-  never contain network commands.
-- **The repo is public:** no hostnames, IPs or secrets in committed config beyond
-  what's already public. Keep host-specific values in a gitignored `deploy/.env`.
+The deploy target is not decided. The app ships as a generic systemd service plus an
+nginx site, with every host-specific value in config:
+
+| Setting | Env var | Default |
+|---|---|---|
+| Listen address | `KANBAN_ADDR` | `127.0.0.1:6220` |
+| Data directory | `KANBAN_DATA` | `./data` |
+| Public base URL (for email links) | `KANBAN_BASE_URL` | `http://127.0.0.1:6220` |
+| Allowed signup domains | `KANBAN_SIGNUP_DOMAINS` | *(empty = signup disabled)* |
+| SMTP relay | `KANBAN_SMTP_HOST`, `_PORT`, `_USER`, `_PASS`, `_FROM` | *(unset = links printed to stdout)* |
+
+Rules that hold wherever it runs:
+
+- The binary binds loopback only; nginx is the only way in.
+- `deploy.sh` touches only the app's files, its nginx site and its systemd unit. It
+  never runs network, firewall or VPN commands.
+- The repo is public, so no hostnames, IPs or secrets go in committed config. Real
+  values live in a gitignored `deploy/.env` and in `/etc/kanban/kanban.env`
+  (root:root 0600), loaded with `EnvironmentFile=`.
+
+If it later runs on `elevate`, follow CloudServer's app checklist and its Rule zero.
 
 ---
 
-## 10. Open questions
+## 10. Decisions
 
-1. **Auth:** local accounts (this plan), or trust Tailscale identity? `tailscale
-   whois` on the peer address would allow zero-password single sign-on, but only
-   inside the tailnet. Local accounts keep the app portable for a public repo;
-   Tailscale identity could be added later as a second login method.
-2. **Hostname/port** on `elevate` (§9).
-3. **Markdown in card descriptions:** v1 renders plain text. Rendering Markdown
-   safely means a sanitizer, so it's deferred.
-4. **Signup:** open, invite-only, or admin-created accounts? The default here is open
-   signup, with an env flag to disable it.
+| Question | Decision |
+|---|---|
+| Auth | Local accounts (argon2id + sessions) |
+| Hosting | Not decided; build it host-agnostic (§9) |
+| Card text | Markdown, rendered on the server and sanitized (§2, M5) |
+| Signup | Restricted to configured email domains, with verified email (M1) |

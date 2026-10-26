@@ -21,7 +21,8 @@ server.
 ## Planned features (v1)
 
 - Boards, lists and cards with drag-and-drop ordering
-- Card details: description, labels, due dates, checklists, comments
+- Card details: Markdown description, labels, due dates, checklists, comments
+- Signup restricted to configured email domains, with email verification
 - Board members with owner, editor and viewer roles
 - Live updates across open tabs (server-sent events)
 - Per-board activity feed
