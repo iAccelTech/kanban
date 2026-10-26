@@ -4,6 +4,20 @@ A Trello-style kanban app: a Go API over SQLite, behind nginx, which serves the 
 HTML/CSS/JS pages. Design rationale lives in [SCALING.md](SCALING.md). This file is the
 build order.
 
+## Status
+
+| Milestone | State |
+|---|---|
+| M0 Skeleton | Done |
+| M1 Auth | **Deferred.** Every request acts as one built-in user (`devUserID` in `internal/api/api.go`) so the pages can be reviewed first |
+| M2 Boards, lists, cards | Done |
+| M3 Drag and drop | Done |
+| M4 Live updates and activity | Done |
+| M5 Card details | Done |
+| M6 Members and permissions | Not started; needs M1 |
+| M7 Deployable | Not started |
+| M8 Hardening and load test | Not started |
+
 ---
 
 ## 1. Scope
@@ -77,35 +91,40 @@ with `-static ./web`, so no nginx is needed locally.
 ## 3. Repository layout
 
 ```
-cmd/kanban/main.go          flags, config, wiring, graceful shutdown
+cmd/kanban/main.go          flags + env, wiring, graceful shutdown
 internal/
-  config/                   env + flags
   store/
     migrations/0001_init.sql …
     migrate.go              user_version runner
-    db.go                   open read pool + writer, pragmas
+    store.go                open read pool + writer, pragmas, shared types
     writer.go               single-writer group commit (SCALING.md §5)
     rank.go                 fractional indexing
-    boards.go lists.go cards.go users.go …
-  auth/                     argon2id, sessions, middleware
-  api/                      handlers, JSON helpers, errors, rate limits
+    reads.go                snapshot, card detail, event log queries
+    writes.go               every mutation
+  markdown/                 goldmark + bluemonday
+  auth/                     (M1) argon2id, sessions, middleware
+  api/                      handlers, JSON helpers, errors; events.go is the SSE stream
   hub/                      SSE pub/sub
 web/
   index.html                board list
   board.html                a board
-  login.html
+  login.html                (M1)
   css/app.css
-  js/api.js                 fetch wrapper, ETag, errors
-  js/board.js               render + drag and drop + SSE
-  js/boards.js  js/login.js js/card.js
-  vendor/Sortable.min.js
+  js/api.js                 fetch wrapper, errors, per-tab client ID
+  js/dom.js                 element builder, icons, popovers, inline edit, dates
+  js/boards.js              board list page
+  js/board.js               lists, cards, drag and drop, live stream, activity
+  js/card.js                card modal
+  js/activity.js            event → sentence
+  vendor/sortable.esm.js    SortableJS 1.15.6 (MIT)
 deploy/
   kanban.service            systemd unit
   nginx-kanban.conf         nginx site
   litestream.yml
   deploy.sh
 scripts/
-  loadtest.js               k6 scenario
+  e2e.js                    Playwright smoke test (make e2e)
+  loadtest.js               (M8) k6 scenario
 SCALING.md  PLAN.md  README.md
 ```
 
@@ -198,8 +217,18 @@ header.
 | POST | `/api/cards/{id}/move` | `{list_id, before_id?, after_id?}` |
 | PUT/DELETE | `/api/cards/{id}/labels/{label_id}` | |
 | POST | `/api/cards/{id}/comments` | |
-| POST | `/api/cards/{id}/checklists` | Checklist and item routes follow the same pattern |
-| POST/PATCH/DELETE | `/api/boards/{id}/labels[/{label_id}]` | |
+| POST | `/api/cards/{id}/checklists` | `{title}` |
+| PATCH/DELETE | `/api/checklists/{id}` | Rename `{title}` / delete |
+| POST | `/api/checklists/{id}/items` | `{text}` |
+| PATCH/DELETE | `/api/items/{id}` | `{text?, done?}` / delete |
+| PATCH/DELETE | `/api/comments/{id}` | Author only |
+| POST | `/api/boards/{id}/labels` | `{name, color}` |
+| PATCH/DELETE | `/api/labels/{id}` | |
+
+Move bodies name the new neighbors: `before_id` is the item that will sit directly
+above (or left of) the moved one, `after_id` the one directly below. Send one; the
+server finds the other itself. Card-detail mutations (labels, checklists, comments)
+return the full card detail.
 
 ### Ops
 
@@ -383,7 +412,7 @@ If it later runs on `elevate`, follow CloudServer's app checklist and its Rule z
 
 | Question | Decision |
 |---|---|
-| Auth | Local accounts (argon2id + sessions) |
+| Auth | Local accounts (argon2id + sessions), deferred until the pages are reviewed |
 | Hosting | Not decided; build it host-agnostic (§9) |
 | Card text | Markdown, rendered on the server and sanitized (§2, M5) |
 | Signup | Restricted to configured email domains, with verified email (M1) |

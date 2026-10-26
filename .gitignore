@@ -1,0 +1,7 @@
+/data/
+/bin/
+*.db
+*.db-wal
+*.db-shm
+deploy/.env
+node_modules/

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Board | Kanban</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body class="board-page">
+  <header class="topbar">
+    <a class="brand" href="./">Kanban</a>
+  </header>
+  <div id="board-header" class="board-header"></div>
+  <div id="archived-banner" class="banner" hidden></div>
+  <div class="board-body">
+    <main id="lists" class="lists" aria-label="Lists"></main>
+    <aside id="activity" class="activity" hidden aria-label="Activity"></aside>
+  </div>
+  <div id="modal-root"></div>
+  <script type="module" src="js/board.js"></script>
+</body>
+</html>

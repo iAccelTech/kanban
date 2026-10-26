@@ -3,8 +3,9 @@
 A self-hosted, Trello-style kanban board. One Go binary, one SQLite file, and plain
 HTML/CSS/JS pages served by nginx.
 
-> **Status: planning.** There is no code yet. See [PLAN.md](PLAN.md) for the build
-> order.
+> **Status:** boards, lists, cards, drag and drop, card details and live updates
+> work. There is no login yet: everyone acts as one built-in user. See
+> [PLAN.md](PLAN.md#status).
 
 ## Why this stack
 
@@ -18,12 +19,12 @@ HTML/CSS/JS pages served by nginx.
 [SCALING.md](SCALING.md) explains the design and how far it scales on a single
 server.
 
-## Planned features (v1)
+## Features
 
 - Boards, lists and cards with drag-and-drop ordering
 - Card details: Markdown description, labels, due dates, checklists, comments
-- Signup restricted to configured email domains, with email verification
-- Board members with owner, editor and viewer roles
+- *(next)* Signup restricted to configured email domains, with email verification
+- *(next)* Board members with owner, editor and viewer roles
 - Live updates across open tabs (server-sent events)
 - Per-board activity feed
 
@@ -36,15 +37,24 @@ browser ─► nginx ─┬─ /      static pages (web/)
 
 ## Development
 
-*Once the M0 milestone lands:*
+Needs Go 1.24 or newer (it fetches the exact toolchain `go.mod` asks for).
 
 ```bash
-make run     # go run ./cmd/kanban -static ./web  → http://127.0.0.1:6220
-make test    # go test -race ./...
-make build-linux
+make run          # http://127.0.0.1:6220, data in ./data/kanban.db
+make test         # go test -race ./...
+make lint
+make build-linux  # bin/kanban-linux-amd64, a static binary you can build from macOS
 ```
 
-The dev server serves `web/` itself, so you don't need nginx locally.
+`make run` serves `web/` itself, so you don't need nginx locally. Delete `./data` to
+start over.
+
+The browser smoke test drives the whole UI in two tabs. Run it against a server on a
+fresh data directory, with Playwright installed:
+
+```bash
+make e2e          # screenshots land in bin/shots/
+```
 
 ## Docs
 
